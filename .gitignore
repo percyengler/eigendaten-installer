@@ -1,0 +1,24 @@
+# Konfigurationsdateien mit Secrets
+config.env
+*.env.local
+*.credentials
+secrets/
+
+# Temporaere Dateien
+*.tmp
+*.log
+*.bak
+
+# OS-Dateien
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Zugangsdaten
+ZUGANGSDATEN.txt
+user-credentials.txt
