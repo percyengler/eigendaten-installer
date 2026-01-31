@@ -297,7 +297,7 @@ reset_mailcow() {
 
         for mail_user in "${MAIL_USERS[@]}"; do
             ssh ${SSH_OPTS} root@${MAIL_SERVER_IP} "
-                curl -s -X PUT 'http://localhost:8080/api/v1/edit/mailbox' \
+                curl -s -k -X POST 'https://mail.${DOMAIN}/api/v1/edit/mailbox' \
                     -H 'Content-Type: application/json' \
                     -H 'X-API-Key: ${MAILCOW_API_KEY}' \
                     -d '{\"items\":[\"${mail_user}\"],\"attr\":{\"password\":\"${NEW_PASSWORD}\",\"password2\":\"${NEW_PASSWORD}\"}}'
