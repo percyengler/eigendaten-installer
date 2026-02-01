@@ -446,8 +446,79 @@ generate_zugangskarten() {
 
     echo "${HEADER}${ALL_CARDS}${FOOTER}" > "$OUTPUT_FILE"
 
-    log "Zugangskarten generiert: ${OUTPUT_FILE}"
-    log_to_file "Zugangskarten: ${OUTPUT_FILE}"
+    log "Zugangskarten (HTML) generiert: ${OUTPUT_FILE}"
+
+    # Markdown-Version generieren (lesbar in Nextcloud)
+    local MD_FILE="${SCRIPT_DIR}/zugangskarten-${DATUM}.md"
+    info "Generiere Markdown-Zugangskarten..."
+
+    {
+        echo "# Eigendaten Office Cloud - Demo-Zugangskarten"
+        echo ""
+        echo "**Erstellt am:** ${DATUM} | **Gueltig bis:** ${ABLAUF}"
+        echo ""
+        echo "> **Dieses Dokument enthaelt vertrauliche Zugangsdaten. Bitte sicher aufbewahren!**"
+        echo ""
+        echo "---"
+        echo ""
+        echo "## Universal-Passwort (alle Dienste)"
+        echo ""
+        echo '```'
+        echo "${NEW_PASSWORD}"
+        echo '```'
+        echo ""
+        echo "---"
+        echo ""
+        echo "## Dienste-Uebersicht"
+        echo ""
+        echo "| Dienst | URL | Anmeldung |"
+        echo "|--------|-----|-----------|"
+        echo "| **Nextcloud** (Dateien, Kalender, Kontakte) | ${CLOUD_URL} | \"Login with Keycloak\" |"
+        echo "| **Keycloak** (Single Sign-On, Profil) | ${SSO_URL} | Benutzername + Passwort |"
+        echo "| **Vaultwarden** (Passwort-Manager) | ${VAULT_URL}/#/sso | SSO-Login |"
+        echo "| **Webmail** (E-Mail im Browser) | ${MAIL_URL} | E-Mail-Adresse + Passwort |"
+        echo "| **Paperless** (Dokumentenverwaltung) | ${PAPERLESS_URL} | \"Keycloak SSO\" |"
+        echo ""
+
+        local USER_NUM=0
+        for user_data in "${DEMO_USERS[@]}"; do
+            USER_NUM=$((USER_NUM + 1))
+            IFS=':' read -r username displayname email department jobtitle <<< "$user_data"
+
+            echo "---"
+            echo ""
+            echo "## Benutzer ${USER_NUM}: ${displayname}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Benutzername** | \`${username}\` |"
+            echo "| **E-Mail** | ${email} |"
+            echo "| **Abteilung** | ${department} |"
+            echo "| **Position** | ${jobtitle} |"
+            echo "| **Passwort** | \`${NEW_PASSWORD}\` |"
+            echo ""
+            echo "### E-Mail-Konfiguration"
+            echo ""
+            echo "| Einstellung | Wert |"
+            echo "|-------------|------|"
+            echo "| E-Mail-Adresse | \`${email}\` |"
+            echo "| Passwort | \`${NEW_PASSWORD}\` |"
+            echo "| Posteingangsserver (IMAP) | \`${MAIL_HOST}\` |"
+            echo "| IMAP Port | 993 (SSL/TLS) |"
+            echo "| Postausgangsserver (SMTP) | \`${MAIL_HOST}\` |"
+            echo "| SMTP Port | 465 (SSL/TLS) |"
+            echo "| Authentifizierung | Normales Passwort |"
+            echo ""
+        done
+
+        echo "---"
+        echo ""
+        echo "*Eigendaten Office Cloud Suite | ${DOMAIN} | Erstellt am ${DATUM} | EHMV GmbH*"
+    } > "$MD_FILE"
+
+    log "Zugangskarten (Markdown) generiert: ${MD_FILE}"
+    log_to_file "Zugangskarten HTML: ${OUTPUT_FILE}"
+    log_to_file "Zugangskarten MD: ${MD_FILE}"
 }
 
 #===============================================================================
