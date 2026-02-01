@@ -49,6 +49,17 @@ KC_ADMIN_PASS="${KC_ADMIN_PASS:?KC_ADMIN_PASS muss gesetzt sein!}"
 # Mailcow API (wird automatisch gelesen)
 MAILCOW_API_KEY=""
 
+# Benachrichtigung
+NOTIFY_EMAIL="${NOTIFY_EMAIL:-admin@example.de}"
+NOREPLY_USER="noreply@${DOMAIN}"
+
+# Nextcloud-Upload
+NC_ADMIN_USER="${NC_ADMIN_USER:-admin}"
+NC_UPLOAD_DIR="${NC_UPLOAD_DIR:-Demo-Reset}"
+
+# Keycloak Client fuer Verifikation
+KC_CLIENT_ID="${KC_CLIENT_ID:-nextcloud}"
+
 # Demo-Benutzer (username:displayname:email:department:jobtitle)
 # ANPASSEN an dein Setup!
 DEMO_USERS=(
@@ -543,10 +554,260 @@ generate_zugangskarten() {
 }
 
 #===============================================================================
-# SCHRITT 9: Zusammenfassung
+# SCHRITT 9: Verifikation
+#===============================================================================
+verify_all() {
+    step "Schritt 9: Automatische Verifikation"
+
+    local DATUM
+    DATUM=$(date '+%Y-%m-%d')
+    local ZEIT
+    ZEIT=$(date '+%Y-%m-%d %H:%M:%S')
+    local ABLAUF
+    ABLAUF=$(date -d "+7 days" '+%Y-%m-%d' 2>/dev/null || date -v+7d '+%Y-%m-%d' 2>/dev/null || echo "in 7 Tagen")
+    VERIFY_LOG="${SCRIPT_DIR}/verify-${DATUM}.log"
+
+    local PASS_COUNT=0
+    local FAIL_COUNT=0
+    local TOTAL_COUNT=0
+
+    _test_ok() {
+        PASS_COUNT=$((PASS_COUNT + 1))
+        TOTAL_COUNT=$((TOTAL_COUNT + 1))
+        echo "[OK]   $1" >> "$VERIFY_LOG"
+        log "  $1"
+    }
+    _test_fail() {
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        TOTAL_COUNT=$((TOTAL_COUNT + 1))
+        echo "[FAIL] $1" >> "$VERIFY_LOG"
+        error "  $1"
+    }
+
+    {
+        echo "=== EIGENDATEN DEMO-RESET VERIFIKATION ==="
+        echo "Datum: ${ZEIT}"
+        echo "Passwort: ${NEW_PASSWORD} (gueltig bis ${ABLAUF})"
+        echo ""
+    } > "$VERIFY_LOG"
+
+    # --- Test 1: Keycloak SSO ---
+    echo "--- Keycloak SSO ---" >> "$VERIFY_LOG"
+    info "Teste Keycloak SSO..."
+
+    local KC_CLIENT_SECRET=""
+    KC_CLIENT_SECRET=$(docker exec keycloak /opt/keycloak/bin/kcadm.sh get clients \
+        -r "$KC_REALM" \
+        -q "clientId=${KC_CLIENT_ID}" \
+        --fields secret 2>/dev/null | grep -oP '"secret"\s*:\s*"\K[^"]+' 2>/dev/null) || true
+
+    if [[ -z "$KC_CLIENT_SECRET" ]]; then
+        warn "Keycloak client_secret konnte nicht gelesen werden. Ueberspringe SSO-Tests."
+        echo "[SKIP] Keycloak SSO: client_secret nicht verfuegbar" >> "$VERIFY_LOG"
+    else
+        for user_data in "${DEMO_USERS[@]}"; do
+            IFS=':' read -r username _ _ _ _ <<< "$user_data"
+
+            local HTTP_CODE
+            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -k \
+                -X POST "https://sso.${DOMAIN}/realms/${KC_REALM}/protocol/openid-connect/token" \
+                -d "grant_type=password" \
+                -d "client_id=${KC_CLIENT_ID}" \
+                -d "client_secret=${KC_CLIENT_SECRET}" \
+                -d "username=${username}" \
+                -d "password=${NEW_PASSWORD}" \
+                2>/dev/null) || HTTP_CODE="000"
+
+            if [[ "$HTTP_CODE" == "200" ]]; then
+                _test_ok "${username}"
+            else
+                _test_fail "${username} (HTTP ${HTTP_CODE})"
+            fi
+        done
+    fi
+
+    echo "" >> "$VERIFY_LOG"
+
+    # --- Test 2: Mailcow IMAP Auth ---
+    echo "--- Mailcow IMAP ---" >> "$VERIFY_LOG"
+    info "Teste Mailcow IMAP-Authentifizierung..."
+
+    for mail_user in "${MAIL_USERS[@]}"; do
+        local AUTH_RESULT
+        AUTH_RESULT=$(ssh ${SSH_OPTS} root@${MAIL_SERVER_IP} "
+            curl -s -o /dev/null -w '%{http_code}' \
+                -X GET 'http://localhost:9082' \
+                -H 'Auth-User: ${mail_user}' \
+                -H 'Auth-Pass: ${NEW_PASSWORD}' \
+                -H 'Auth-Protocol: imap' \
+                -H 'Auth-Login-Attempt: 1' \
+                -H 'Client-IP: 127.0.0.1'
+        " 2>/dev/null) || AUTH_RESULT="000"
+
+        if [[ "$AUTH_RESULT" == "200" ]]; then
+            _test_ok "${mail_user}"
+        else
+            _test_fail "${mail_user} (HTTP ${AUTH_RESULT})"
+        fi
+    done
+
+    echo "" >> "$VERIFY_LOG"
+
+    # --- Test 3-6: Dienste erreichbar ---
+    echo "--- Dienste ---" >> "$VERIFY_LOG"
+    info "Teste Dienst-Erreichbarkeit..."
+
+    local NC_STATUS
+    NC_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -k "${CLOUD_URL}/status.php" 2>/dev/null) || NC_STATUS="000"
+    if [[ "$NC_STATUS" == "200" ]]; then
+        _test_ok "Nextcloud (cloud.${DOMAIN})"
+    else
+        _test_fail "Nextcloud (cloud.${DOMAIN}) (HTTP ${NC_STATUS})"
+    fi
+
+    local VW_STATUS
+    VW_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -k "${VAULT_URL}/alive" 2>/dev/null) || VW_STATUS="000"
+    if [[ "$VW_STATUS" == "200" ]]; then
+        _test_ok "Vaultwarden (vault.${DOMAIN})"
+    else
+        _test_fail "Vaultwarden (vault.${DOMAIN}) (HTTP ${VW_STATUS})"
+    fi
+
+    local MAIL_STATUS
+    MAIL_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -k "${MAIL_URL}" 2>/dev/null) || MAIL_STATUS="000"
+    if [[ "$MAIL_STATUS" == "200" || "$MAIL_STATUS" == "301" || "$MAIL_STATUS" == "302" ]]; then
+        _test_ok "Webmail (mail.${DOMAIN})"
+    else
+        _test_fail "Webmail (mail.${DOMAIN}) (HTTP ${MAIL_STATUS})"
+    fi
+
+    local PL_STATUS
+    PL_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -k "${PAPERLESS_URL}" 2>/dev/null) || PL_STATUS="000"
+    if [[ "$PL_STATUS" == "200" || "$PL_STATUS" == "301" || "$PL_STATUS" == "302" ]]; then
+        _test_ok "Paperless (paperless.${DOMAIN})"
+    else
+        _test_fail "Paperless (paperless.${DOMAIN}) (HTTP ${PL_STATUS})"
+    fi
+
+    echo "" >> "$VERIFY_LOG"
+    echo "Ergebnis: ${PASS_COUNT}/${TOTAL_COUNT} Tests bestanden" >> "$VERIFY_LOG"
+
+    if [[ $FAIL_COUNT -eq 0 ]]; then
+        log "Verifikation: ${PASS_COUNT}/${TOTAL_COUNT} Tests bestanden"
+    else
+        warn "Verifikation: ${PASS_COUNT}/${TOTAL_COUNT} Tests bestanden, ${FAIL_COUNT} fehlgeschlagen!"
+    fi
+
+    log "Verifikationslog: ${VERIFY_LOG}"
+    log_to_file "Verifikation: ${PASS_COUNT}/${TOTAL_COUNT} Tests bestanden"
+}
+
+#===============================================================================
+# SCHRITT 10: Benachrichtigung
+#===============================================================================
+notify() {
+    step "Schritt 10: Benachrichtigung"
+
+    local DATUM
+    DATUM=$(date '+%Y-%m-%d')
+    local ABLAUF
+    ABLAUF=$(date -d "+7 days" '+%Y-%m-%d' 2>/dev/null || date -v+7d '+%Y-%m-%d' 2>/dev/null || echo "in 7 Tagen")
+
+    local HTML_FILE="${SCRIPT_DIR}/zugangskarten-${DATUM}.html"
+    local MD_FILE="${SCRIPT_DIR}/zugangskarten-${DATUM}.md"
+    local LOG_VERIFY="${VERIFY_LOG:-${SCRIPT_DIR}/verify-${DATUM}.log}"
+
+    # --- E-Mail versenden ---
+    info "Sende Benachrichtigung an ${NOTIFY_EMAIL}..."
+
+    local EMAIL_FILE
+    EMAIL_FILE=$(mktemp /tmp/demo-reset-email.XXXXXX)
+
+    {
+        echo "From: Eigendaten Demo <${NOREPLY_USER}>"
+        echo "To: ${NOTIFY_EMAIL}"
+        echo "Subject: Eigendaten Demo-Reset ${DATUM} - Passwort: ${NEW_PASSWORD}"
+        echo "Content-Type: text/plain; charset=UTF-8"
+        echo ""
+        echo "Eigendaten Demo-System Reset"
+        echo "============================="
+        echo ""
+        echo "Datum: ${DATUM}"
+        echo "Neues Passwort: ${NEW_PASSWORD}"
+        echo "Gueltig bis: ${ABLAUF}"
+        echo ""
+        echo "URLs:"
+        echo "  Cloud:     ${CLOUD_URL}"
+        echo "  SSO:       ${SSO_URL}"
+        echo "  Vault:     ${VAULT_URL}"
+        echo "  Mail:      ${MAIL_URL}"
+        echo "  Paperless: ${PAPERLESS_URL}"
+        echo ""
+        echo "Demo-Benutzer:"
+        for user_data in "${DEMO_USERS[@]}"; do
+            IFS=':' read -r username displayname email _ _ <<< "$user_data"
+            echo "  ${displayname} (${username}) - ${email}"
+        done
+        echo ""
+        echo "--- Verifikationslog ---"
+        if [[ -f "$LOG_VERIFY" ]]; then
+            cat "$LOG_VERIFY"
+        else
+            echo "(kein Verifikationslog verfuegbar)"
+        fi
+        echo ""
+        echo "---"
+        echo "Zugangskarten: Verfuegbar in Nextcloud unter /Demo-Reset/"
+        echo "Automatisch generiert von demo-reset.sh"
+    } > "$EMAIL_FILE"
+
+    curl --ssl-reqd -s \
+        --url "smtps://mail.${DOMAIN}:465" \
+        --user "${NOREPLY_USER}:${NEW_PASSWORD}" \
+        --mail-from "${NOREPLY_USER}" \
+        --mail-rcpt "${NOTIFY_EMAIL}" \
+        --upload-file "$EMAIL_FILE" \
+        2>/dev/null && log "E-Mail an ${NOTIFY_EMAIL} gesendet" \
+        || warn "E-Mail-Versand fehlgeschlagen"
+
+    rm -f "$EMAIL_FILE"
+
+    # --- Nextcloud-Upload ---
+    info "Lade Dateien nach Nextcloud hoch..."
+
+    local NC_DATA_DIR="/var/www/html/data/${NC_ADMIN_USER}/files/${NC_UPLOAD_DIR}"
+
+    docker exec nextcloud bash -c "mkdir -p '${NC_DATA_DIR}'" 2>/dev/null || true
+
+    local UPLOAD_COUNT=0
+    if [[ -f "$HTML_FILE" ]]; then
+        docker cp "$HTML_FILE" "nextcloud:${NC_DATA_DIR}/zugangskarten-${DATUM}.html" 2>/dev/null && UPLOAD_COUNT=$((UPLOAD_COUNT + 1)) || warn "Upload zugangskarten.html fehlgeschlagen"
+    fi
+    if [[ -f "$MD_FILE" ]]; then
+        docker cp "$MD_FILE" "nextcloud:${NC_DATA_DIR}/zugangskarten-${DATUM}.md" 2>/dev/null && UPLOAD_COUNT=$((UPLOAD_COUNT + 1)) || warn "Upload zugangskarten.md fehlgeschlagen"
+    fi
+    if [[ -f "$LOG_VERIFY" ]]; then
+        docker cp "$LOG_VERIFY" "nextcloud:${NC_DATA_DIR}/verify-${DATUM}.log" 2>/dev/null && UPLOAD_COUNT=$((UPLOAD_COUNT + 1)) || warn "Upload verify.log fehlgeschlagen"
+    fi
+
+    if [[ $UPLOAD_COUNT -gt 0 ]]; then
+        docker exec nextcloud bash -c "chown -R www-data:www-data '${NC_DATA_DIR}'" 2>/dev/null || true
+        docker exec -u www-data nextcloud php occ files:scan "${NC_ADMIN_USER}" \
+            --path="/${NC_ADMIN_USER}/files/${NC_UPLOAD_DIR}" 2>/dev/null \
+            || warn "Nextcloud files:scan fehlgeschlagen"
+        log "${UPLOAD_COUNT} Dateien nach Nextcloud hochgeladen (/${NC_UPLOAD_DIR}/)"
+    else
+        warn "Keine Dateien fuer Nextcloud-Upload vorhanden"
+    fi
+
+    log_to_file "Benachrichtigung: E-Mail an ${NOTIFY_EMAIL}, ${UPLOAD_COUNT} Dateien nach Nextcloud"
+}
+
+#===============================================================================
+# SCHRITT 11: Zusammenfassung
 #===============================================================================
 show_summary() {
-    step "Schritt 9: Zusammenfassung"
+    step "Schritt 11: Zusammenfassung"
 
     local DATUM
     DATUM=$(date '+%Y-%m-%d')
@@ -567,11 +828,15 @@ show_summary() {
         echo "  ${displayname} (${username}) - ${email}"
     done
     echo ""
-    echo -e "${BOLD}Zugangskarten:${NC}"
+    echo -e "${BOLD}Dateien:${NC}"
     if [[ -f "${SCRIPT_DIR}/zugangskarten-${DATUM}.html" ]]; then
-        echo "  ${SCRIPT_DIR}/zugangskarten-${DATUM}.html"
-    else
-        echo "  (nicht generiert)"
+        echo "  Zugangskarten (HTML): ${SCRIPT_DIR}/zugangskarten-${DATUM}.html"
+    fi
+    if [[ -f "${SCRIPT_DIR}/zugangskarten-${DATUM}.md" ]]; then
+        echo "  Zugangskarten (MD):   ${SCRIPT_DIR}/zugangskarten-${DATUM}.md"
+    fi
+    if [[ -f "${SCRIPT_DIR}/verify-${DATUM}.log" ]]; then
+        echo "  Verifikationslog:     ${SCRIPT_DIR}/verify-${DATUM}.log"
     fi
     echo ""
     echo -e "${BOLD}Gueltig bis:${NC} ${ABLAUF}"
@@ -605,6 +870,8 @@ main() {
     reset_paperless
     reset_vaultwarden
     generate_zugangskarten
+    verify_all
+    notify
     show_summary
 }
 

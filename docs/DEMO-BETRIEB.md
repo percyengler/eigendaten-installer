@@ -62,9 +62,12 @@ sudo /opt/demo-reset/demo-reset.sh --yes
 2. Keycloak: Passwoerter aller 5 Demo-User werden zurueckgesetzt
 3. Nextcloud: Alle Benutzerdateien, Papierkorb und Versionen werden geloescht
 4. Mailcow: Alle E-Mails werden geloescht, Postfach-Passwoerter gesetzt
-5. Paperless: Alle Dokumente werden geloescht, Admin-Passwort wird gesetzt
-6. Vaultwarden: Alle Benutzer-Vaults werden geloescht
-7. HTML-Zugangskarten werden generiert
+5. Mailcow: `authsource='mailcow'` fuer alle Postfaecher setzen + Dovecot Auth-Cache flush
+6. Paperless: Alle Dokumente werden geloescht, Admin-Passwort wird gesetzt
+7. Vaultwarden: Alle Benutzer-Vaults werden geloescht
+8. HTML- und Markdown-Zugangskarten werden generiert
+9. Automatische Verifikation aller Dienste (Keycloak SSO, IMAP, HTTP)
+10. Benachrichtigung per E-Mail + Upload nach Nextcloud
 
 ### Was NICHT zurueckgesetzt wird
 
@@ -81,7 +84,9 @@ sudo /opt/demo-reset/demo-reset.sh --yes
 |------|-------------|
 | `/opt/demo-reset/demo-reset.sh` | Haupt-Script |
 | `/opt/demo-reset/zugangskarten-template.html` | HTML-Template |
-| `/opt/demo-reset/zugangskarten-YYYY-MM-DD.html` | Generierte Zugangskarten |
+| `/opt/demo-reset/zugangskarten-YYYY-MM-DD.html` | Generierte Zugangskarten (HTML) |
+| `/opt/demo-reset/zugangskarten-YYYY-MM-DD.md` | Generierte Zugangskarten (Markdown) |
+| `/opt/demo-reset/verify-YYYY-MM-DD.log` | Verifikationsprotokoll |
 | `/opt/demo-reset/reset-log.txt` | Protokoll aller Resets |
 
 ## Zugangskarten
@@ -89,6 +94,7 @@ sudo /opt/demo-reset/demo-reset.sh --yes
 Nach jedem Reset wird eine HTML-Datei mit Zugangskarten generiert:
 
 - **Format:** A4, eine Karte pro Benutzer (druckoptimiert)
+- **Formate:** HTML (druckbar) und Markdown (lesbar in Nextcloud/GitHub)
 - **Inhalt:** Benutzername, Passwort, alle URLs, E-Mail-Konfiguration (IMAP/SMTP)
 - **Ablauf:** 7 Tage ab Erstellung
 
@@ -124,8 +130,63 @@ Vor dem ersten Einsatz muessen folgende Variablen in `demo-reset.sh` angepasst w
 | `KC_ADMIN_PASS` | Keycloak Admin-Passwort | (aus ENV oder Script) |
 | `DEMO_USERS` | Benutzer-Array | Siehe Script |
 | `MAIL_USERS` | Postfach-Array | Siehe Script |
+| `NOTIFY_EMAIL` | Empfaenger fuer Reset-Benachrichtigung | `admin@example.de` |
+| `NC_ADMIN_USER` | Nextcloud Admin-User fuer Upload | `admin` |
+| `NC_UPLOAD_DIR` | Nextcloud-Verzeichnis fuer Upload | `Demo-Reset` |
+| `KC_CLIENT_ID` | Keycloak Client-ID fuer Verifikation | `nextcloud` |
 
 Alternativ koennen die Variablen ueber Environment-Variablen gesetzt werden.
+
+## Automatische Verifikation (Schritt 9)
+
+Nach dem Reset werden automatisch alle Dienste getestet:
+
+| # | Test | Methode |
+|---|------|---------|
+| 1 | Keycloak SSO (5 User) | OAuth2 Password Grant an `sso.DOMAIN/realms/REALM/protocol/openid-connect/token` |
+| 2 | Mailcow IMAP (6 User) | Dovecot Auth-API via `nginx:9082` auf Mail-Server |
+| 3 | Nextcloud erreichbar | HTTP `cloud.DOMAIN/status.php` |
+| 4 | Vaultwarden erreichbar | HTTP `vault.DOMAIN/alive` |
+| 5 | Webmail erreichbar | HTTP `mail.DOMAIN` |
+| 6 | Paperless erreichbar | HTTP `paperless.DOMAIN` |
+
+Das Ergebnis wird in `/opt/demo-reset/verify-YYYY-MM-DD.log` gespeichert.
+
+Der Keycloak `client_secret` wird zur Laufzeit automatisch aus der Keycloak Admin-CLI gelesen (kein Hardcoding).
+
+## Benachrichtigung (Schritt 10)
+
+Nach der Verifikation werden die Ergebnisse automatisch verteilt:
+
+### E-Mail-Benachrichtigung
+
+- **Absender:** noreply@DOMAIN (existierende Mailbox, Passwort wird beim Reset mitgesetzt)
+- **Empfaenger:** Konfigurierbar (`NOTIFY_EMAIL`)
+- **Inhalt:** Verifikationslog + Zugangskarten-Info
+- **Methode:** curl SMTP (smtps://mail.DOMAIN:465)
+
+### Nextcloud-Upload
+
+- Zugangskarten (HTML + Markdown) und Verifikationslog werden nach Nextcloud hochgeladen
+- **Pfad:** `/admin/files/Demo-Reset/`
+- **Methode:** `docker cp` + `occ files:scan` (kein Passwort noetig, lokaler Docker-Zugriff)
+
+## Bekannte Probleme & Loesungen
+
+### authsource-Bug (Mailcow/Keycloak)
+
+**Problem:** Nach dem Passwort-Reset schlaegt die IMAP/SMTP-Authentifizierung fehl, obwohl das Passwort in Mailcow korrekt gesetzt wurde.
+
+**Ursache:** Die Authentifizierungskette in Mailcow lautet:
+```
+Dovecot → Lua-Script → nginx:9082 → PHP mailcowauth.php → user_login()
+→ authsource-Switch:
+  - 'mailcow': Passwort direkt pruefen → OK
+  - 'keycloak': REST-Call an Keycloak + mailpassword_flow pruefen
+    → mailpassword_flow=0 → return false (Auth schlaegt IMMER fehl!)
+```
+
+**Loesung:** Das Reset-Script setzt automatisch `authsource='mailcow'` fuer alle Demo-Postfaecher nach dem Passwort-Reset und leert den Dovecot Auth-Cache.
 
 ## Troubleshooting
 
