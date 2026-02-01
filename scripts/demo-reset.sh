@@ -305,11 +305,32 @@ reset_mailcow() {
         done
 
         log "Postfach-Passwoerter zurueckgesetzt"
+
+        # authsource auf 'mailcow' setzen (verhindert Keycloak-REST-Auth-Fehler bei mailpassword_flow=0)
+        info "Setze authsource=mailcow fuer alle Demo-Postfaecher..."
+        local MAIL_USERS_SQL=""
+        for mail_user in "${MAIL_USERS[@]}"; do
+            if [[ -n "$MAIL_USERS_SQL" ]]; then
+                MAIL_USERS_SQL+=","
+            fi
+            MAIL_USERS_SQL+="'${mail_user}'"
+        done
+        ssh ${SSH_OPTS} root@${MAIL_SERVER_IP} "
+            cd /opt/mailcow-dockerized && docker compose exec -T mysql-mailcow mysql -umailcow -p\$(grep DBPASS mailcow.conf | cut -d= -f2) -e \"UPDATE mailcow.mailbox SET authsource='mailcow' WHERE username IN (${MAIL_USERS_SQL});\"
+        " 2>/dev/null || warn "authsource Update fehlgeschlagen"
+        log "authsource=mailcow fuer alle Postfaecher gesetzt"
+
+        # Dovecot Auth-Cache leeren
+        info "Leere Dovecot Auth-Cache..."
+        ssh ${SSH_OPTS} root@${MAIL_SERVER_IP} "
+            cd /opt/mailcow-dockerized && docker compose exec -T dovecot-mailcow /usr/bin/doveadm auth cache flush
+        " 2>/dev/null || warn "Auth-Cache flush fehlgeschlagen"
+        log "Dovecot Auth-Cache geleert"
     else
         warn "Mailcow API-Key nicht gefunden. Passwoerter manuell setzen."
     fi
 
-    log_to_file "Mailcow: Postfaecher geleert, Passwoerter zurueckgesetzt"
+    log_to_file "Mailcow: Postfaecher geleert, Passwoerter zurueckgesetzt, authsource=mailcow"
 }
 
 #===============================================================================
