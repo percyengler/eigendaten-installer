@@ -173,6 +173,20 @@ Nach der Verifikation werden die Ergebnisse automatisch verteilt:
 
 ## Bekannte Probleme & Loesungen
 
+### SOGo Webmail: Kein direkter Login (seit Mailcow 2025-03)
+
+**Problem:** Der direkte Login ueber `mail.DOMAIN/SOGo` funktioniert nicht (403 Forbidden, LDAPPasswordPolicyError).
+
+**Ursache:** Seit dem Mailcow 2025-03 Update ist der direkte SOGo-Login deaktiviert. Alle unauthentifizierten Zugriffe auf `/SOGo` werden auf `/` umgeleitet. SOGo authentifiziert ueber Proxy-Headers (`SOGoTrustProxyAuthentication=YES`), nicht mehr ueber SQL-Passwoerter.
+
+**Loesung:** Benutzer muessen sich ueber die Mailcow-UI anmelden: `https://mail.DOMAIN/`. Nach dem Login werden sie automatisch zu SOGo weitergeleitet.
+
+### Fehlende Postfaecher fuer Demo-User
+
+**Problem:** Nicht alle Keycloak-Benutzer haben automatisch ein Mailcow-Postfach.
+
+**Loesung:** Das Reset-Script prueft jetzt beim Reset, ob alle Demo-User Postfaecher haben und erstellt fehlende automatisch ueber die Mailcow-API.
+
 ### authsource-Bug (Mailcow/Keycloak)
 
 **Problem:** Nach dem Passwort-Reset schlaegt die IMAP/SMTP-Authentifizierung fehl, obwohl das Passwort in Mailcow korrekt gesetzt wurde.

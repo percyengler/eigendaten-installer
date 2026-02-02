@@ -73,11 +73,13 @@ DEMO_USERS=(
 # Mail-Postfaecher die geleert werden (NICHT noreply@)
 MAIL_USERS=(
     "admin@${DOMAIN}"
+    "azubi@${DOMAIN}"
     "buchhaltung@${DOMAIN}"
+    "gf@${DOMAIN}"
     "hr@${DOMAIN}"
     "info@${DOMAIN}"
     "rechnung@${DOMAIN}"
-    "gf@${DOMAIN}"
+    "technik@${DOMAIN}"
 )
 
 # URLs
@@ -304,6 +306,35 @@ reset_mailcow() {
         "grep '^API_KEY=' /opt/mailcow-dockerized/mailcow.conf | cut -d'=' -f2" 2>/dev/null) || true
 
     if [[ -n "$MAILCOW_API_KEY" ]]; then
+        # Fehlende Postfaecher fuer Demo-User anlegen
+        info "Pruefe/erstelle Postfaecher fuer Demo-User..."
+        for demo_entry in "${DEMO_USERS[@]}"; do
+            local demo_email
+            demo_email=$(echo "$demo_entry" | cut -d: -f3)
+            local demo_name
+            demo_name=$(echo "$demo_entry" | cut -d: -f2)
+            local demo_local
+            demo_local=$(echo "$demo_email" | cut -d@ -f1)
+            # Pruefen ob Postfach existiert
+            local MB_EXISTS
+            MB_EXISTS=$(ssh ${SSH_OPTS} root@${MAIL_SERVER_IP} "
+                curl -s -k 'https://mail.${DOMAIN}/api/v1/get/mailbox/${demo_email}' \
+                    -H 'X-API-Key: ${MAILCOW_API_KEY}'
+            " 2>/dev/null) || MB_EXISTS="[]"
+            if echo "$MB_EXISTS" | grep -q '"username"'; then
+                log "  ${demo_email}: Postfach existiert"
+            else
+                info "  ${demo_email}: Erstelle Postfach..."
+                ssh ${SSH_OPTS} root@${MAIL_SERVER_IP} "
+                    curl -s -k -X POST 'https://mail.${DOMAIN}/api/v1/add/mailbox' \
+                        -H 'Content-Type: application/json' \
+                        -H 'X-API-Key: ${MAILCOW_API_KEY}' \
+                        -d '{\"local_part\":\"${demo_local}\",\"domain\":\"${DOMAIN}\",\"name\":\"${demo_name}\",\"password\":\"${NEW_PASSWORD}\",\"password2\":\"${NEW_PASSWORD}\",\"quota\":1024,\"active\":1,\"force_pw_update\":0,\"tls_enforce_in\":0,\"tls_enforce_out\":0}'
+                " 2>/dev/null || warn "  ${demo_email}: Erstellen fehlgeschlagen"
+                log "  ${demo_email}: Postfach erstellt"
+            fi
+        done
+
         info "Setze Postfach-Passwoerter ueber Mailcow-API..."
 
         for mail_user in "${MAIL_USERS[@]}"; do
@@ -626,7 +657,13 @@ verify_all() {
     echo "--- Keycloak SSO ---" >> "$VERIFY_LOG"
     info "Teste Keycloak SSO..."
 
+    # Client-Secret zur Laufzeit aus Keycloak lesen (Re-Auth fuer gueltige Session)
     local KC_CLIENT_SECRET=""
+    docker exec keycloak /opt/keycloak/bin/kcadm.sh config credentials \
+        --server http://localhost:8080 \
+        --realm master \
+        --user "$KC_ADMIN" \
+        --password "$KC_ADMIN_PASS" 2>/dev/null || true
     KC_CLIENT_SECRET=$(docker exec keycloak /opt/keycloak/bin/kcadm.sh get clients \
         -r "$KC_REALM" \
         -q "clientId=${KC_CLIENT_ID}" \
