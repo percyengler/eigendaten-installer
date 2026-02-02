@@ -315,6 +315,16 @@ reset_mailcow() {
             " 2>/dev/null || warn "  ${mail_user}: Passwort-Reset fehlgeschlagen"
         done
 
+        # Auch noreply@-Postfach Passwort setzen (fuer E-Mail-Versand in Schritt 10)
+        info "Setze noreply@-Passwort..."
+        ssh ${SSH_OPTS} root@${MAIL_SERVER_IP} "
+            curl -s -k -X POST 'https://mail.${DOMAIN}/api/v1/edit/mailbox' \
+                -H 'Content-Type: application/json' \
+                -H 'X-API-Key: ${MAILCOW_API_KEY}' \
+                -d '{\"items\":[\"${NOREPLY_USER}\"],\"attr\":{\"password\":\"${NEW_PASSWORD}\",\"password2\":\"${NEW_PASSWORD}\"}}'
+        " 2>/dev/null || warn "  noreply@: Passwort-Reset fehlgeschlagen"
+        log "noreply@-Passwort gesetzt"
+
         log "Postfach-Passwoerter zurueckgesetzt"
 
         # authsource auf 'mailcow' setzen (verhindert Keycloak-REST-Auth-Fehler bei mailpassword_flow=0)
@@ -326,6 +336,7 @@ reset_mailcow() {
             fi
             MAIL_USERS_SQL+="'${mail_user}'"
         done
+        MAIL_USERS_SQL+=",'${NOREPLY_USER}'"
         ssh ${SSH_OPTS} root@${MAIL_SERVER_IP} "
             cd /opt/mailcow-dockerized && docker compose exec -T mysql-mailcow mysql -umailcow -p\$(grep DBPASS mailcow.conf | cut -d= -f2) -e \"UPDATE mailcow.mailbox SET authsource='mailcow' WHERE username IN (${MAIL_USERS_SQL});\"
         " 2>/dev/null || warn "authsource Update fehlgeschlagen"
@@ -635,19 +646,16 @@ verify_all() {
     for mail_user in "${MAIL_USERS[@]}"; do
         local AUTH_RESULT
         AUTH_RESULT=$(ssh ${SSH_OPTS} root@${MAIL_SERVER_IP} "
-            curl -s -o /dev/null -w '%{http_code}' \
-                -X GET 'http://localhost:9082' \
-                -H 'Auth-User: ${mail_user}' \
-                -H 'Auth-Pass: ${NEW_PASSWORD}' \
-                -H 'Auth-Protocol: imap' \
-                -H 'Auth-Login-Attempt: 1' \
-                -H 'Client-IP: 127.0.0.1'
-        " 2>/dev/null) || AUTH_RESULT="000"
+            cd /opt/mailcow-dockerized && docker compose exec -T nginx-mailcow curl -s -k \
+                -X POST 'https://localhost:9082' \
+                -H 'Content-Type: application/json' \
+                -d '{\"username\":\"${mail_user}\",\"password\":\"${NEW_PASSWORD}\",\"real_rip\":\"127.0.0.1\",\"service\":\"imap\"}'
+        " 2>/dev/null) || AUTH_RESULT="{}"
 
-        if [[ "$AUTH_RESULT" == "200" ]]; then
+        if echo "$AUTH_RESULT" | grep -q '"success":true'; then
             _test_ok "${mail_user}"
         else
-            _test_fail "${mail_user} (HTTP ${AUTH_RESULT})"
+            _test_fail "${mail_user}"
         fi
     done
 
