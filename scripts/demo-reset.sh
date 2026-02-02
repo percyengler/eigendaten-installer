@@ -395,7 +395,27 @@ print('Admin-Passwort geaendert')
     " 2>/dev/null || warn "Paperless Admin-Passwort Reset fehlgeschlagen"
 
     log "Paperless zurueckgesetzt"
-    log_to_file "Paperless: Dokumente geloescht, Admin-Passwort zurueckgesetzt"
+
+    # SSO-User Berechtigungen setzen (is_staff + is_superuser)
+    # Paperless setzt neue SSO-User standardmaessig ohne Staff/Superuser-Rechte,
+    # was zu 403-Fehlern bei /api/ui_settings/ fuehrt.
+    info "Setze Paperless SSO-User Berechtigungen..."
+    ssh ${SSH_OPTS} root@${PAPERLESS_SERVER_IP} "
+        docker exec -i \$(docker ps -qf name=paperless-webserver) python3 manage.py shell << 'PYEOF'
+from django.contrib.auth.models import User
+for u in User.objects.exclude(username__in=['admin', 'consumer', 'AnonymousUser']):
+    if not u.is_staff or not u.is_superuser:
+        u.is_staff = True
+        u.is_superuser = True
+        u.save()
+        print(f'{u.username}: staff+superuser gesetzt')
+    else:
+        print(f'{u.username}: bereits OK')
+PYEOF
+    " 2>/dev/null || warn "Paperless SSO-User Berechtigungen fehlgeschlagen"
+    log "Paperless SSO-User Berechtigungen gesetzt"
+
+    log_to_file "Paperless: Dokumente geloescht, Admin-Passwort zurueckgesetzt, SSO-Berechtigungen gesetzt"
 }
 
 #===============================================================================
