@@ -630,7 +630,7 @@ show_summary() {
 main() {
     echo -e "${BLUE}"
     echo "╔═══════════════════════════════════════════════════════════════════╗"
-    echo "║          Eigendaten - Post-Installation v3.0                      ║"
+    echo "║          Eigendaten - Post-Installation v4.0                      ║"
     echo "╚═══════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 

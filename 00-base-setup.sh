@@ -35,7 +35,7 @@ info()  { echo -e "${BLUE}[i]${NC} $1"; }
 banner() {
     echo -e "${BLUE}"
     echo "╔═══════════════════════════════════════════════════════════════════╗"
-    echo "║          EIGENDATEN - Base Server Setup v3.0                      ║"
+    echo "║          EIGENDATEN - Base Server Setup v4.0                      ║"
     echo "║          Vollautomatisches Production-Ready Setup                 ║"
     echo "╚═══════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
@@ -58,23 +58,23 @@ echo -e "${YELLOW}=== Server-Konfiguration ===${NC}\n"
 # AUTO_CONFIRM Modus prüfen
 AUTO_CONFIRM="${AUTO_CONFIRM:-false}"
 
-# Hostname (aus ENV: HOSTNAME oder aus DOMAIN ableiten)
-if [[ -n "${HOSTNAME:-}" ]]; then
-    info "Hostname: $HOSTNAME (aus ENV)"
+# Hostname (NEW_HOSTNAME vermeidet Kollision mit Bash-Builtin $HOSTNAME)
+if [[ -n "${NEW_HOSTNAME:-}" ]]; then
+    info "Hostname: $NEW_HOSTNAME (aus ENV)"
 elif [[ -n "${DOMAIN:-}" ]]; then
     case "${SERVER_ROLE:-app}" in
-        app)  HOSTNAME="app01" ;;
-        mail) HOSTNAME="mail01" ;;
-        full) HOSTNAME="srv01" ;;
-        *)    HOSTNAME="app01" ;;
+        app)  NEW_HOSTNAME="app01" ;;
+        mail) NEW_HOSTNAME="mail01" ;;
+        full) NEW_HOSTNAME="srv01" ;;
+        *)    NEW_HOSTNAME="app01" ;;
     esac
-    info "Hostname: $HOSTNAME (automatisch)"
+    info "Hostname: $NEW_HOSTNAME (automatisch)"
 elif [[ "$AUTO_CONFIRM" == "true" ]]; then
-    HOSTNAME="srv01"
-    info "Hostname: $HOSTNAME (default)"
+    NEW_HOSTNAME="srv01"
+    info "Hostname: $NEW_HOSTNAME (default)"
 else
-    read -p "Hostname für diesen Server (z.B. app01): " HOSTNAME
-    [ -z "$HOSTNAME" ] && error "Hostname darf nicht leer sein!"
+    read -p "Hostname für diesen Server (z.B. app01): " NEW_HOSTNAME
+    [ -z "$NEW_HOSTNAME" ] && error "Hostname darf nicht leer sein!"
 fi
 
 # Deploy-User
@@ -103,7 +103,7 @@ if [[ -n "${SERVER_ROLE:-}" ]]; then
     case "${SERVER_ROLE}" in
         app|1)  FW_ROLE=1; info "Firewall-Rolle: APP-Server (aus ENV)" ;;
         mail|2) FW_ROLE=2; info "Firewall-Rolle: MAIL-Server (aus ENV)" ;;
-        full|3) FW_ROLE=1; info "Firewall-Rolle: APP-Server/Full (aus ENV)" ;;
+        full|3) FW_ROLE=3; info "Firewall-Rolle: APP+MAIL-Server/Full (aus ENV)" ;;
         *)      FW_ROLE=1 ;;
     esac
 elif [[ "$AUTO_CONFIRM" == "true" ]]; then
@@ -114,7 +114,8 @@ else
     echo "Server-Rolle für Firewall-Regeln:"
     echo "  1) APP-Server (HTTP/HTTPS, NPM-Admin, Standard-Ports)"
     echo "  2) MAIL-Server (SMTP, IMAP, POP3, HTTP/HTTPS)"
-    echo "  3) Minimal (nur SSH)"
+    echo "  3) APP+MAIL Full (alle Ports)"
+    echo "  4) Minimal (nur SSH)"
     read -p "Auswahl [1]: " FW_ROLE
     FW_ROLE=${FW_ROLE:-1}
 fi
@@ -122,7 +123,7 @@ fi
 # Zusammenfassung
 echo ""
 echo -e "${BLUE}Zusammenfassung:${NC}"
-echo "  Hostname:     ${HOSTNAME}"
+echo "  Hostname:     ${NEW_HOSTNAME}"
 echo "  Deploy-User:  ${DEPLOY_USER}"
 echo "  SSH-Port:     ${SSH_PORT}"
 echo "  Server-Rolle: ${FW_ROLE}"
@@ -183,24 +184,25 @@ log "Pakete installiert (inkl. jq für Mailcow)"
 #===============================================================================
 log "Hostname wird gesetzt..."
 
-hostnamectl set-hostname "$HOSTNAME"
-echo "$HOSTNAME" > /etc/hostname
+hostnamectl set-hostname "$NEW_HOSTNAME"
+echo "$NEW_HOSTNAME" > /etc/hostname
 
 # /etc/hosts aktualisieren
-if ! grep -q "$HOSTNAME" /etc/hosts; then
-    sed -i "s/127.0.0.1 localhost/127.0.0.1 localhost $HOSTNAME/" /etc/hosts
+if ! grep -q "$NEW_HOSTNAME" /etc/hosts; then
+    sed -i "s/127.0.0.1 localhost/127.0.0.1 localhost $NEW_HOSTNAME/" /etc/hosts
 fi
 
-log "Hostname: $HOSTNAME"
+log "Hostname: $NEW_HOSTNAME"
 
 #===============================================================================
 # Zeitzone setzen
 #===============================================================================
-log "Zeitzone wird auf Europe/Berlin gesetzt..."
+TIMEZONE="${TIMEZONE:-Europe/Berlin}"
+log "Zeitzone wird auf $TIMEZONE gesetzt..."
 
-timedatectl set-timezone Europe/Berlin
+timedatectl set-timezone "$TIMEZONE"
 
-log "Zeitzone: Europe/Berlin"
+log "Zeitzone: $TIMEZONE"
 
 #===============================================================================
 # Deploy-User erstellen
@@ -241,7 +243,7 @@ apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || 
 
 # Docker GPG Key
 install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
 chmod a+r /etc/apt/keyrings/docker.gpg
 
 # Docker Repository
@@ -296,7 +298,21 @@ case $FW_ROLE in
         ufw allow 4190/tcp comment 'Sieve'
         log "MAIL-Server Firewall-Regeln hinzugefügt"
         ;;
-    3) # Minimal
+    3) # APP+MAIL Full
+        ufw allow 80/tcp comment 'HTTP'
+        ufw allow 443/tcp comment 'HTTPS'
+        ufw allow 81/tcp comment 'NPM Admin (später einschränken!)'
+        ufw allow 25/tcp comment 'SMTP'
+        ufw allow 465/tcp comment 'SMTPS'
+        ufw allow 587/tcp comment 'Submission'
+        ufw allow 143/tcp comment 'IMAP'
+        ufw allow 993/tcp comment 'IMAPS'
+        ufw allow 110/tcp comment 'POP3'
+        ufw allow 995/tcp comment 'POP3S'
+        ufw allow 4190/tcp comment 'Sieve'
+        log "APP+MAIL Full Firewall-Regeln hinzugefügt"
+        ;;
+    4) # Minimal
         log "Minimale Firewall (nur SSH)"
         ;;
 esac
