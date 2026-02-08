@@ -1,6 +1,6 @@
 #!/bin/bash
 #===============================================================================
-# Eigendaten - App Server Setup v3.0
+# Eigendaten - App Server Setup v4.0
 # 
 # Installiert auf einem vorbereiteten Server:
 # - Nginx Proxy Manager
@@ -34,7 +34,7 @@ info()  { echo -e "${BLUE}[i]${NC} $1"; }
 banner() {
     echo -e "${BLUE}"
     echo "╔═══════════════════════════════════════════════════════════════════╗"
-    echo "║          EIGENDATEN - App Server Setup v3.0                       ║"
+    echo "║          EIGENDATEN - App Server Setup v4.0                       ║"
     echo "║     Nextcloud + Paperless + Keycloak + Vaultwarden               ║"
     echo "╚═══════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
@@ -259,7 +259,7 @@ log "docker-compose.yml wird erstellt..."
 
 cat > docker-compose.yml << 'COMPOSE_EOF'
 # ============================================
-# Eigendaten App Server - Docker Compose v3.0
+# Eigendaten App Server - Docker Compose v4.0
 # KEINE version: - ist obsolet in modernem Docker Compose
 # ============================================
 

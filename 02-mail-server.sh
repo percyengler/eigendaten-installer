@@ -1,6 +1,6 @@
 #!/bin/bash
 #===============================================================================
-# Eigendaten - Mail Server Setup v3.0
+# Eigendaten - Mail Server Setup v4.0
 # 
 # Installiert Mailcow-dockerized mit:
 # - Automatischer Konfiguration
@@ -31,7 +31,7 @@ info()  { echo -e "${BLUE}[i]${NC} $1"; }
 banner() {
     echo -e "${BLUE}"
     echo "╔═══════════════════════════════════════════════════════════════════╗"
-    echo "║          EIGENDATEN - Mail Server Setup v3.0                      ║"
+    echo "║          EIGENDATEN - Mail Server Setup v4.0                      ║"
     echo "║                    Mailcow-dockerized                             ║"
     echo "╚═══════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
@@ -62,13 +62,28 @@ fi
 #===============================================================================
 # Konfiguration abfragen
 #===============================================================================
+AUTO_CONFIRM="${AUTO_CONFIRM:-false}"
+
 echo -e "${YELLOW}=== Mailcow-Konfiguration ===${NC}\n"
 
-read -p "Mail-Hostname FQDN (z.B. mail.example.com): " MAILCOW_HOSTNAME
-[ -z "$MAILCOW_HOSTNAME" ] && error "Hostname darf nicht leer sein!"
+# Mail-Hostname: aus ENV, aus DOMAIN ableiten, oder interaktiv
+if [[ -n "${MAILCOW_HOSTNAME:-}" ]]; then
+    info "Mail-Hostname: $MAILCOW_HOSTNAME (aus ENV)"
+elif [[ -n "${MAIL_DOMAIN:-}" ]]; then
+    MAILCOW_HOSTNAME="$MAIL_DOMAIN"
+    info "Mail-Hostname: $MAILCOW_HOSTNAME (aus MAIL_DOMAIN)"
+elif [[ -n "${DOMAIN:-}" ]]; then
+    MAILCOW_HOSTNAME="mail.${DOMAIN}"
+    info "Mail-Hostname: $MAILCOW_HOSTNAME (aus DOMAIN)"
+elif [[ "$AUTO_CONFIRM" == "true" ]]; then
+    error "MAILCOW_HOSTNAME oder DOMAIN muss bei AUTO_CONFIRM gesetzt sein!"
+else
+    read -p "Mail-Hostname FQDN (z.B. mail.example.com): " MAILCOW_HOSTNAME
+    [ -z "$MAILCOW_HOSTNAME" ] && error "Hostname darf nicht leer sein!"
+fi
 
-# Domain extrahieren
-MAIL_DOMAIN=$(echo "$MAILCOW_HOSTNAME" | cut -d. -f2-)
+# Domain extrahieren (nur wenn nicht bereits aus ENV gesetzt)
+MAIL_DOMAIN="${MAIL_DOMAIN:-$(echo "$MAILCOW_HOSTNAME" | cut -d. -f2-)}"
 
 # RAM prüfen für Ressourcen-Empfehlung
 RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
@@ -78,24 +93,26 @@ echo ""
 
 if [ "$RAM_MB" -lt 4000 ]; then
     warn "Weniger als 4GB RAM - eingeschränkte Konfiguration empfohlen!"
-    SKIP_SOLR="y"
-    SKIP_CLAMD="n"
+    SKIP_SOLR="${SKIP_SOLR:-y}"
+    SKIP_CLAMD="${SKIP_CLAMD:-n}"
     info "Empfehlung: Solr deaktivieren (spart ~1GB RAM, keine Volltextsuche)"
 elif [ "$RAM_MB" -lt 6000 ]; then
-    SKIP_SOLR="y"
-    SKIP_CLAMD="n"
+    SKIP_SOLR="${SKIP_SOLR:-y}"
+    SKIP_CLAMD="${SKIP_CLAMD:-n}"
     info "Empfehlung: Solr deaktivieren für bessere Performance"
 else
-    SKIP_SOLR="n"
-    SKIP_CLAMD="n"
+    SKIP_SOLR="${SKIP_SOLR:-n}"
+    SKIP_CLAMD="${SKIP_CLAMD:-n}"
     info "Genügend RAM für vollständige Installation"
 fi
 
-read -p "Solr (Volltextsuche) deaktivieren? [${SKIP_SOLR}]: " USER_SKIP_SOLR
-SKIP_SOLR=${USER_SKIP_SOLR:-$SKIP_SOLR}
+if [[ "$AUTO_CONFIRM" != "true" ]]; then
+    read -p "Solr (Volltextsuche) deaktivieren? [${SKIP_SOLR}]: " USER_SKIP_SOLR
+    SKIP_SOLR=${USER_SKIP_SOLR:-$SKIP_SOLR}
 
-read -p "ClamAV (Virenscan) deaktivieren? [${SKIP_CLAMD}]: " USER_SKIP_CLAMD
-SKIP_CLAMD=${USER_SKIP_CLAMD:-$SKIP_CLAMD}
+    read -p "ClamAV (Virenscan) deaktivieren? [${SKIP_CLAMD}]: " USER_SKIP_CLAMD
+    SKIP_CLAMD=${USER_SKIP_CLAMD:-$SKIP_CLAMD}
+fi
 
 echo ""
 echo -e "${BLUE}Konfiguration:${NC}"
@@ -104,8 +121,13 @@ echo "  Domain:      ${MAIL_DOMAIN}"
 echo "  Solr:        $([ "$SKIP_SOLR" = "y" ] && echo "Deaktiviert" || echo "Aktiviert")"
 echo "  ClamAV:      $([ "$SKIP_CLAMD" = "y" ] && echo "Deaktiviert" || echo "Aktiviert")"
 echo ""
-read -p "Fortfahren? (j/n): " CONFIRM
-[ "$CONFIRM" != "j" ] && [ "$CONFIRM" != "J" ] && { echo "Abgebrochen."; exit 0; }
+
+if [[ "$AUTO_CONFIRM" != "true" ]]; then
+    read -p "Fortfahren? (j/n): " CONFIRM
+    [ "$CONFIRM" != "j" ] && [ "$CONFIRM" != "J" ] && { echo "Abgebrochen."; exit 0; }
+else
+    info "AUTO_CONFIRM aktiv - starte automatisch..."
+fi
 
 #===============================================================================
 # Mailcow klonen
@@ -116,10 +138,14 @@ cd /opt
 
 if [ -d "mailcow-dockerized" ]; then
     warn "mailcow-dockerized existiert bereits"
-    read -p "Löschen und neu klonen? (j/n): " RECLONE
-    if [ "$RECLONE" = "j" ]; then
-        rm -rf mailcow-dockerized
-        git clone https://github.com/mailcow/mailcow-dockerized
+    if [[ "$AUTO_CONFIRM" == "true" ]]; then
+        info "AUTO_CONFIRM aktiv - vorhandene Installation wird verwendet"
+    else
+        read -p "Löschen und neu klonen? (j/n): " RECLONE
+        if [ "$RECLONE" = "j" ]; then
+            rm -rf mailcow-dockerized
+            git clone https://github.com/mailcow/mailcow-dockerized
+        fi
     fi
 else
     git clone https://github.com/mailcow/mailcow-dockerized
